@@ -1,6 +1,8 @@
 # TrailerMonitor
 
-## A Particle project named TrailerMonitor
+An IoT monitoring system based on the Particle Electron and Particle Asset Tracker kit.
+
+## A Particle project
 
 Every new Particle project is composed of 3 important elements that you'll see have been created in your project directory for NewTrailerMonitor.
 
