@@ -2,6 +2,21 @@
 
 An IoT monitoring system based on the Particle Electron and Particle Asset Tracker kit.
 
+The hardware is based on the Particle Electron microprocessor cellular board (now superseded by the next generation Particle boron).  The board has an STM32 microprocessor and a cellular radio to access the network. https://www.particle.io/cellular/
+
+The GPS unit is the Particle Asset Tracker which includes a GPS unit, antenna, battery, carrier board, and waterproof box.
+https://www.particle.io/products/hardware/asset-tracker/
+
+I added an Adafruit DHT22 temperature and humidity sensor to track how extreme the inside environment gets during the peak of summer and winter.
+
+The software is based on several example and library modules available on the particle web site.  I've placed it into a GitHub repository that is publicly accessible in case anyone wants to duplicate the build. https://github.com/mitchmitchell/trailer-monitor
+
+The device monitors A/C power to the trailer to let me know if the GCFI the trailer is plugged into cuts out so I can turn off the battery cut off switch until power is restored.  The asset tracker board provides GPS and an accelerometer that will let me know if the trailer is jostled.  Its sensitive enough to detect someone entering the trailer or hitching it up.  The temperature sensor warns me if I need to start thinking of winterizing the trailer.
+
+Actual notification is handled by a Raspberry Pi running node-red using nodes which connect to the Particle cloud to receive data.  No ports or anything need be opened on the network where the Raspberry Pi resides.   The node-red program is very specific to my network so you might want to build your own.  It connects to Twilio to send SMS message alerts and to our Google Home to announce issues audibly.
+
+The monitor has saved our batteries on several occasions already paying for itself so we've been quite happy with it and it definitely helps our peace of mind.
+
 ## A Particle project
 
 Every new Particle project is composed of 3 important elements that you'll see have been created in your project directory for NewTrailerMonitor.
