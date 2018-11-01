@@ -1,8 +1,6 @@
-# NewTrailerMonitor
+# TrailerMonitor
 
-A Particle project named NewTrailerMonitor
-
-## Welcome to your project!
+## A Particle project named TrailerMonitor
 
 Every new Particle project is composed of 3 important elements that you'll see have been created in your project directory for NewTrailerMonitor.
 
