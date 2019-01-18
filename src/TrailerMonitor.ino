@@ -108,7 +108,7 @@ PowerCheck pc = PowerCheck();
 DHT dht(DHTPIN, DHTTYPE);
 
 // keep track of what antenna we are using for the GPS receiver.
-bool gpsAntennaExternal = false;
+bool gpsAntennaExternal = true;
 // Used to keep track of the last time we published gps data
 long lastGPSPublish = 0;
 // Used to keep track of the last time we published acceleration data
@@ -326,7 +326,9 @@ int pubValue(String command) {
 // a GPS fix, otherwise returns '0'
 int gpsPublish(String command) {
     if (t.gpsFix()) {
-        Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f}",t.readLatDeg(),t.readLonDeg(),t.getAltitude(),t.getGpsAccuracy()), 60, PRIVATE);
+			  time_t time = Time.now();
+				// Short publish names save data!
+			  Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f,\"tm\":\"%s\"}",t.readLatDeg(),t.readLonDeg(),t.getAltitude(),t.getGpsAccuracy(),Time.format(time, TIME_FORMAT_ISO8601_FULL).c_str()), 60, PRIVATE);
         return 1;
     } else {
         return 0;
@@ -399,8 +401,10 @@ void checkGPSStatus() {
         if (t.gpsFix()) {
             // Only publish if we're in transmittingData mode 1;
             if ((transmittingData & TRANSMITTINGGPSDATA) == TRANSMITTINGGPSDATA) {
+							time_t time = Time.now();
+							Time.format(time, TIME_FORMAT_ISO8601_FULL); // 2004-01-10T08:22:04-05:15
                 // Short publish names save data!
-              Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f}",t.readLatDeg(),t.readLonDeg(),t.getAltitude(),t.getGpsAccuracy()), 60, PRIVATE);
+              Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f,\"tm\":\"%s\"}",t.readLatDeg(),t.readLonDeg(),t.getAltitude(),t.getGpsAccuracy(),Time.format(time, TIME_FORMAT_ISO8601_FULL).c_str()), 60, PRIVATE);
                 // Remember when we published
               lastGPSPublish = millis();
             }
