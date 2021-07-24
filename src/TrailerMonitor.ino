@@ -8,7 +8,7 @@
 
 #include "AssetTracker2.h"
 #include "PowerCheck.h"
-#include "Adafruit_DHT.h"
+#include "PietteTech_DHT.h"
 #include "Tinker.h"
 #include "system_event.h"
 
@@ -19,12 +19,15 @@
 #include "SessionCheck.h"
 #include "Tester.h"
 
-#define DHTPIN 3  // what pin we're connected to
-
 // Uncomment whatever type you're using!
 //#define DHTTYPE DHT11		// DHT 11
 #define DHTTYPE DHT22		// DHT 22 (AM2302)
 //#define DHTTYPE DHT21		// DHT 21 (AM2301)
+//#define DHTVcc   D2                 // Digital pin to power the sensor
+#define DHTPIN   D3                 // Digital pin for communications
+//#define DHTGnd   D4                 // Digital pin for sensor GND
+#define DHT_SAMPLE_INTERVAL   2000  // Sample every two seconds
+
 
 #define APP_WATCHDOG_TIMEOUT	60000 // milliseconds
 
@@ -51,12 +54,13 @@ SerialLogHandler logHandler;
 
 // We use retained memory keep track of connection events; these are saved and later uploaded
 // to the cloud even after rebooting
-void startup() {
+void startupMacro() {
 	System.enableFeature(FEATURE_RETAINED_MEMORY);
 	System.enableFeature(FEATURE_RESET_INFO);
 }
-STARTUP(startup);
-
+STARTUP(startupMacro());
+//STARTUP(System.enableFeature(FEATURE_RETAINED_MEMORY));
+//STARTUP(System.enableFeature(FEATURE_RESET_INFO));
 // System threaded mode is not required here, but it's a good idea with 0.6.0 and later.
 // https://docs.particle.io/reference/firmware/electron/#system-thread
 SYSTEM_THREAD(ENABLED);
@@ -105,7 +109,8 @@ FuelGauge fuel = FuelGauge();
 // A PowerCheck object named 'pc' for watching the power state of the usb socket
 PowerCheck pc = PowerCheck();
 // A DHT object named dht to access the DHT22 temperature and humidity sensor
-DHT dht(DHTPIN, DHTTYPE);
+PietteTech_DHT dht(DHTPIN, DHTTYPE, NULL);
+bool bDHTstarted;		                // DHT flag to indicate we started acquisition
 
 // keep track of what antenna we are using for the GPS receiver.
 bool gpsAntennaExternal = true;
@@ -134,7 +139,8 @@ bool lastPower = true; // assume we do, then we will report power lost on boot i
 // Extremely useful for saving data while developing close enough to have a cable plugged in.
 // You can also change this remotely using the Particle.function "tmode" defined in setup()
 //int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALLOOPDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA | SERIALDHTDATA );
-int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA );
+int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA | SERIALDHTDATA );
+//int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA );
 // Run the GPS off a timer interrupt.
 // read all bytes available, if an entire message was received,
 // parse it store the data for access by the get routines.
@@ -151,7 +157,6 @@ Timer timer(50, callGPS);
 void setup() {
 	//
 	Serial.begin(9600);
-
 
 	// Wait to allow particle serial monitor to get connected
   // This lets you see the version info from the ublox receiver
@@ -320,6 +325,7 @@ int pubValue(String command) {
   } else if (command == "env") {
     return envPublish(command);
   } else
+	  Particle.publish("LJCMDERR", String::format("{\"cmd\":\"%s\"}", command.c_str()), 60, PRIVATE);
     return 0;
 }
 // Actively ask for a GPS reading if you're impatient. Only publishes if there's
@@ -328,10 +334,10 @@ int gpsPublish(String command) {
     if (t.gpsFix()) {
 			  time_t time = Time.now();
 				// Short publish names save data!
-			  Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f,\"tm\":\"%s\"}",t.readLatDeg(),t.readLonDeg(),t.getAltitude(),t.getGpsAccuracy(),Time.format(time, TIME_FORMAT_ISO8601_FULL).c_str()), 60, PRIVATE);
+			  Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f,\"tm\":\"%s\"}",t.readLatDeg(),t.readLonDeg(),(t.getAltitude() / 1000),(t.getGpsAccuracy() / 1000),Time.format(time, TIME_FORMAT_ISO8601_FULL).c_str()), 60, PRIVATE);
         return 1;
     } else {
-        return 0;
+        return 2;
     }
 }
 
@@ -346,8 +352,8 @@ int pwrPublish(String command){
     Particle.publish("LJPWRSTAT", String::format("{\"s\": %d,\"n\": 0,\"v\":%.2f,\"c\":%.2f}",pc.getHasPower(),fuel.getVCell(),fuel.getSoC()), 60, PRIVATE );
     // if there's more than 10% of the battery left, then return 1
     if (fuel.getSoC()>10){ return 1;}
-    // if you're running out of battery, return 0
-    else { return 0;}
+    // if you're running out of battery, return 2
+    else { return 2;}
 }
 
 // Lets you remotely check the accelleration status by calling the function "readXYZmagnitude"
@@ -361,18 +367,18 @@ int accPublish(String command){
 // Triggers a publish with the info (so subscribe or watch the dashboard)
 int envPublish(String command){
 		delay(2000); // DHT 22 minumum sampling period
-  // Reading temperature or humidity takes about 250 milliseconds!
+    int result = dht.getStatus();  // Reading temperature or humidity takes about 250 milliseconds!
   // Sensor readings may also be up to 2 seconds 'old' (its a
   // very slow sensor)
   	float h = dht.getHumidity();
   // Read temperature as Farenheit
-  	float f = dht.getTempFarenheit();
+  	float f = dht.getFahrenheit();
 
   // Check if any reads failed and exit early (to try again).
-  	if (isnan(h) || isnan(f)) {
+  	if (isnan(h) || isnan(f) || result != DHTLIB_OK) {
 			if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA)
       	Serial.println("Failed to read from DHT sensor!");
-  		return 0;
+  		return 2;
   	}
 
     Particle.publish("LJENVMT", String::format("{\"t\":%.2f,\"h\":%.2f}",f,h), 60, PRIVATE);
@@ -394,7 +400,7 @@ int checkPowerStatus() {
 
 void checkGPSStatus() {
     // if the current time - the last time we published is greater than your set delay...
-    if (millis()-lastGPSPublish > delayGPSMinutes*60*1000) {
+    if (millis()-lastGPSPublish > ((unsigned long) delayGPSMinutes*60*1000)) {
 
         // GPS requires a "fix" on the satellites to give good data,
         // so we should only publish data if there's a fix
@@ -404,7 +410,7 @@ void checkGPSStatus() {
 							time_t time = Time.now();
 							Time.format(time, TIME_FORMAT_ISO8601_FULL); // 2004-01-10T08:22:04-05:15
                 // Short publish names save data!
-              Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f,\"tm\":\"%s\"}",t.readLatDeg(),t.readLonDeg(),t.getAltitude(),t.getGpsAccuracy(),Time.format(time, TIME_FORMAT_ISO8601_FULL).c_str()), 60, PRIVATE);
+              Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f,\"tm\":\"%s\"}",t.readLatDeg(),t.readLonDeg(),(t.getAltitude() / 1000),(t.getGpsAccuracy() / 1000),Time.format(time, TIME_FORMAT_ISO8601_FULL).c_str()), 60, PRIVATE);
                 // Remember when we published
               lastGPSPublish = millis();
             }
@@ -424,7 +430,7 @@ void checkAccelStatus() {
           	Serial.println(pubAccel);
       }
       // if the current time - the last time we published is greater than your set delay...
-      if (millis()-lastACCPublish > delayACCMinutes*60*1000) {
+      if (millis()-lastACCPublish > ((unsigned long) delayACCMinutes*60*1000)) {
           if ((transmittingData & TRANSMITTINGACCDATA) == TRANSMITTINGACCDATA) {
             // only publish if we had an accelleration event occur since our last publication time
             if (pubAccel != "") {
@@ -440,22 +446,82 @@ void checkAccelStatus() {
 }
 
 void checkDHTStatus() {
-	delay(2000); // DHT 22 minumum sampling period
+  static uint32_t msLastSample = 0;
+  int result = 0;
+  if (millis() - msLastSample <  DHT_SAMPLE_INTERVAL) return;
+
+  if (!bDHTstarted) {               // start the sample
+		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA) {
+      Serial.println("\r\nRetrieving information from DHT sensor. ");
+    }
+    dht.acquire();
+    bDHTstarted = true;
+  }
+
+  if (!dht.acquiring()) {           // has sample completed?
+    result = dht.getStatus();
+
+		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA) {
+      Serial.print("Read sensor: ");
+      switch (result) {
+        case DHTLIB_OK:
+          Serial.println("OK");
+          break;
+        case DHTLIB_ERROR_CHECKSUM:
+          Serial.println("Error\n\r\tChecksum error");
+          break;
+        case DHTLIB_ERROR_ISR_TIMEOUT:
+          Serial.println("Error\n\r\tISR time out error");
+          break;
+        case DHTLIB_ERROR_RESPONSE_TIMEOUT:
+          Serial.println("Error\n\r\tResponse time out error");
+          break;
+        case DHTLIB_ERROR_DATA_TIMEOUT:
+          Serial.println("Error\n\r\tData time out error");
+          break;
+        case DHTLIB_ERROR_ACQUIRING:
+          Serial.println("Error\n\r\tAcquiring");
+          break;
+        case DHTLIB_ERROR_DELTA:
+          Serial.println("Error\n\r\tDelta time to small");
+          break;
+        case DHTLIB_ERROR_NOTSTARTED:
+          Serial.println("Error\n\r\tNot started");
+          break;
+        default:
+          Serial.println("Unknown error");
+          break;
+      }
+    }
+
+
+		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA) {
+      Serial.printlnf("Humidity (%%): %.2f", dht.getHumidity());
+      Serial.printlnf("Temperature (oC): %.2f", dht.getCelsius());
+      Serial.printlnf("Temperature (oF): %.2f", dht.getFahrenheit());
+      Serial.printlnf("Temperature (K): %.2f", dht.getKelvin());
+      Serial.printlnf("Dew Point (oC): %.2f", dht.getDewPoint());
+      Serial.printlnf("Dew Point Slow (oC): %.2f", dht.getDewPointSlow());
+    }
+
+    bDHTstarted = false;  // reset the sample flag so we can take another
+    msLastSample = millis();
+  }
 // Reading temperature or humidity takes about 250 milliseconds!
 // Sensor readings may also be up to 2 seconds 'old' (its a
 // very slow sensor)
 	float h = dht.getHumidity();
 // Read temperature as Farenheit
-	float f = dht.getTempFarenheit();
+	float f = dht.getFahrenheit();
 
 // Check if any reads failed and exit early (to try again).
-	if (isnan(h) || isnan(f)) {
+	if (isnan(h) || isnan(f) || result != DHTLIB_OK) {
 		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA)
 			Serial.println("Failed to read from DHT sensor!");
 		return;
 	}
   // if the current time - the last time we published is greater than your set delay...
-  if (millis()-lastDHTPublish > delayDHTMinutes*60*1000) {
+  if (millis()-lastDHTPublish > ((unsigned long) delayDHTMinutes*60*1000)) {
       if ((transmittingData & TRANSMITTINGDHTDATA) == TRANSMITTINGDHTDATA) {
           // Short publish names save data!
           Particle.publish("LJENVMT", String::format("{\"t\":%.2f,\"h\":%.2f}",f,h), 60, PRIVATE);

@@ -38,16 +38,16 @@
 /**************************************************************************/
 // I2C
 Adafruit_LIS3DH::Adafruit_LIS3DH()
-  : _cs(-1), _mosi(-1), _miso(-1), _sck(-1), _sensorID(-1)
+  : _sensorID(-1), _cs(-1), _mosi(-1), _miso(-1), _sck(-1)
 {
 }
 
 Adafruit_LIS3DH::Adafruit_LIS3DH(int8_t cspin)
-  : _cs(cspin), _mosi(-1), _miso(-1), _sck(-1), _sensorID(-1)
+  : _sensorID(-1), _cs(cspin), _mosi(-1), _miso(-1), _sck(-1)
 { }
 
 Adafruit_LIS3DH::Adafruit_LIS3DH(int8_t cspin, int8_t mosipin, int8_t misopin, int8_t sckpin)
-  : _cs(cspin), _mosi(mosipin), _miso(misopin), _sck(sckpin), _sensorID(-1)
+  : _sensorID(-1), _cs(cspin), _mosi(mosipin), _miso(misopin), _sck(sckpin)
 { }
 
 
@@ -317,6 +317,8 @@ bool Adafruit_LIS3DH::getEvent(sensors_event_t *event) {
   event->acceleration.x = x_g;
   event->acceleration.y = y_g;
   event->acceleration.z = z_g;
+
+  return true;
 }
 
 /**************************************************************************/
