@@ -110,8 +110,9 @@ FuelGauge fuel = FuelGauge();
 PowerCheck pc = PowerCheck();
 // A DHT object named dht to access the DHT22 temperature and humidity sensor
 PietteTech_DHT dht(DHTPIN, DHTTYPE, NULL);
-bool bDHTstarted;		                // DHT flag to indicate we started acquisition
 
+// DHT flag to indicate we started acquisition
+bool bDHTstarted;
 // keep track of what antenna we are using for the GPS receiver.
 bool gpsAntennaExternal = true;
 // Used to keep track of the last time we published gps data
@@ -139,7 +140,7 @@ bool lastPower = true; // assume we do, then we will report power lost on boot i
 // Extremely useful for saving data while developing close enough to have a cable plugged in.
 // You can also change this remotely using the Particle.function "tmode" defined in setup()
 //int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALLOOPDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA | SERIALDHTDATA );
-int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA | SERIALDHTDATA );
+int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA);
 //int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA );
 // Run the GPS off a timer interrupt.
 // read all bytes available, if an entire message was received,
@@ -179,7 +180,7 @@ void setup() {
 	// subsequent failures, the Electron will sleep for this many seconds. The intention is to set it to
 	// maybe 10 - 20 minutes so if there is a problem like SIM paused or a network or cloud failure, the
 	// Electron won't continuously try and fail to connect, depleting the battery.
-	// connectionCheck.withFailureSleepSec(15 * 60);
+	connectionCheck.withFailureSleepSec(15 * 60);
 
 	// We store connection events in retained memory. Do this early because things like batteryCheck will generate events.
 	connectionEvents.setup();
@@ -235,7 +236,7 @@ void setup() {
 	// Start reading from the gps
 	timer.start();
 
-	delay(2000); // DHT 22 minumum sampling period
+	delay(DHT_SAMPLE_INTERVAL); // DHT 22 minumum sampling period
 
 	if ((transmittingData & SERIALSETUPDATA) == SERIALSETUPDATA)
 		Serial.println("End of setup() function");
@@ -363,15 +364,14 @@ int accPublish(String command){
   return 1;
 }
 
-// Lets you remotely check the accelleration status by calling the functions "getHumidity" and "getTempFarenheit"
+// Lets you remotely check the environmental status by calling the functions "getHumidity" and "getFahrenheit"
 // Triggers a publish with the info (so subscribe or watch the dashboard)
 int envPublish(String command){
-		delay(2000); // DHT 22 minumum sampling period
-    int result = dht.getStatus();  // Reading temperature or humidity takes about 250 milliseconds!
-  // Sensor readings may also be up to 2 seconds 'old' (its a
-  // very slow sensor)
+
+    int result = dht.acquireAndWait(DHT_SAMPLE_INTERVAL);  // Reading temperature or humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
   	float h = dht.getHumidity();
-  // Read temperature as Farenheit
+  // Read temperature as Fahrenheit
   	float f = dht.getFahrenheit();
 
   // Check if any reads failed and exit early (to try again).
@@ -494,7 +494,27 @@ void checkDHTStatus() {
       }
     }
 
-
+  // Reading temperature or humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (its a
+  // very slow sensor)
+  	float h = dht.getHumidity();
+  // Read temperature as Farenheit
+  	float f = dht.getFahrenheit();
+  // Check if any reads failed and exit early (to try again).
+  	if (isnan(h) || isnan(f) || result != DHTLIB_OK) {
+  		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA)
+  			Serial.println("Failed to read from DHT sensor!");
+  		return;
+  	}
+    // if the current time - the last time we published is greater than your set delay...
+    if (millis()-lastDHTPublish > ((unsigned long) delayDHTMinutes*60*1000)) {
+      if ((transmittingData & TRANSMITTINGDHTDATA) == TRANSMITTINGDHTDATA) {
+        // Short publish names save data!
+        Particle.publish("LJENVMT", String::format("{\"t\":%.2f,\"h\":%.2f}",f,h), 60, PRIVATE);
+        // Remember when we published
+        lastDHTPublish = millis();
+      }
+    }
 		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA) {
       Serial.printlnf("Humidity (%%): %.2f", dht.getHumidity());
       Serial.printlnf("Temperature (oC): %.2f", dht.getCelsius());
@@ -507,28 +527,6 @@ void checkDHTStatus() {
     bDHTstarted = false;  // reset the sample flag so we can take another
     msLastSample = millis();
   }
-// Reading temperature or humidity takes about 250 milliseconds!
-// Sensor readings may also be up to 2 seconds 'old' (its a
-// very slow sensor)
-	float h = dht.getHumidity();
-// Read temperature as Farenheit
-	float f = dht.getFahrenheit();
-
-// Check if any reads failed and exit early (to try again).
-	if (isnan(h) || isnan(f) || result != DHTLIB_OK) {
-		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA)
-			Serial.println("Failed to read from DHT sensor!");
-		return;
-	}
-  // if the current time - the last time we published is greater than your set delay...
-  if (millis()-lastDHTPublish > ((unsigned long) delayDHTMinutes*60*1000)) {
-      if ((transmittingData & TRANSMITTINGDHTDATA) == TRANSMITTINGDHTDATA) {
-          // Short publish names save data!
-          Particle.publish("LJENVMT", String::format("{\"t\":%.2f,\"h\":%.2f}",f,h), 60, PRIVATE);
-          // Remember when we published
-          lastDHTPublish = millis();
-        }
-      }
 }
 
 
