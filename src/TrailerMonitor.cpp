@@ -170,8 +170,8 @@ bool lastPower = true; // assume we do, then we will report power lost on boot i
 // Extremely useful for saving data while developing close enough to have a cable plugged in.
 // You can also change this remotely using the Particle.function "tmode" defined in setup()
 //int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALLOOPDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA | SERIALDHTDATA );
-int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA);
-//int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA );
+//int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA);
+int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA );
 // Run the GPS off a timer interrupt.
 // read all bytes available, if an entire message was received,
 // parse it store the data for access by the get routines.
@@ -210,7 +210,7 @@ void setup() {
 	// subsequent failures, the Electron will sleep for this many seconds. The intention is to set it to
 	// maybe 10 - 20 minutes so if there is a problem like SIM paused or a network or cloud failure, the
 	// Electron won't continuously try and fail to connect, depleting the battery.
-	// connectionCheck.withFailureSleepSec(15 * 60);
+	connectionCheck.withFailureSleepSec(15 * 60);
 
 	// We store connection events in retained memory. Do this early because things like batteryCheck will generate events.
 	connectionEvents.setup();

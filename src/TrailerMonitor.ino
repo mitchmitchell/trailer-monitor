@@ -140,8 +140,8 @@ bool lastPower = true; // assume we do, then we will report power lost on boot i
 // Extremely useful for saving data while developing close enough to have a cable plugged in.
 // You can also change this remotely using the Particle.function "tmode" defined in setup()
 //int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALLOOPDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA | SERIALDHTDATA );
-int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA);
-//int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA );
+//int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA);
+int transmittingData = ( TRANSMITTINGGPSDATA | TRANSMITTINGACCDATA | TRANSMITTINGPWRDATA | TRANSMITTINGDHTDATA );
 // Run the GPS off a timer interrupt.
 // read all bytes available, if an entire message was received,
 // parse it store the data for access by the get routines.
