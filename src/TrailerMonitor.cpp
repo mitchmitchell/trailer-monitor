@@ -210,7 +210,7 @@ void setup() {
 	// subsequent failures, the Electron will sleep for this many seconds. The intention is to set it to
 	// maybe 10 - 20 minutes so if there is a problem like SIM paused or a network or cloud failure, the
 	// Electron won't continuously try and fail to connect, depleting the battery.
-	connectionCheck.withFailureSleepSec(5 * 60);
+	connectionCheck.withFailureSleepSec(15 * 60);
 
 	// We store connection events in retained memory. Do this early because things like batteryCheck will generate events.
 	connectionEvents.setup();

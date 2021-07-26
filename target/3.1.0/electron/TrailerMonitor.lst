@@ -3102,7 +3102,7 @@ void setup() {
 	inline ConnectionCheck &withCloudWaitForReboot(unsigned long value) { cloudWaitForReboot = value; return *this; };
 	inline ConnectionCheck &withPingTimeout(unsigned long value) { pingTimeout = value; return *this; };
 	inline ConnectionCheck &withFailureSleepSec(unsigned long value) { failureSleepSec = value; return *this; };
- 8081630:	f44f 7396 	mov.w	r3, #300	; 0x12c
+ 8081630:	f44f 7361 	mov.w	r3, #900	; 0x384
 	connectionEvents.setup();
  8081634:	488b      	ldr	r0, [pc, #556]	; (8081864 <setup+0x280>)
  8081636:	6123      	str	r3, [r4, #16]
