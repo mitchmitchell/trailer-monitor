@@ -6,7 +6,8 @@ retained SessionRetainedData SessionCheck::sessionRetainedData;
 
 
 SessionCheck::SessionCheck(time_t checkPeriodSecs, const char *eventSuffix) : checkPeriodSecs(checkPeriodSecs) {
-	eventName = System.deviceID() + "/" + eventSuffix;
+	//eventName = System.deviceID() + "/" + eventSuffix;
+	eventName = eventSuffix;
 }
 
 SessionCheck::~SessionCheck() {
