@@ -121,16 +121,22 @@ void Tester::processOptions(char *mutableData) {
 
 		ConnectionEvents::addEvent(ConnectionEvents::CONNECTION_EVENT_TESTER_SLEEP, duration);
 
+		if (strcmp(argv[1], "wlan") == 0) {
+			// SLEEP_MODE_WLAN requires cellular handshaking again (blinking green) and also
+			// restarts running setup() again, so you'll get an event 0 (CONNECTION_EVENT_SETUP_STARTED)
+			System.sleep(SLEEP_MODE_WLAN, duration, SLEEP_DISABLE_WKP_PIN);
+		}
+		else
 		if (strcmp(argv[1], "deep") == 0) {
 			// SLEEP_MODE_DEEP requires cellular handshaking again (blinking green) and also
 			// restarts running setup() again, so you'll get an event 0 (CONNECTION_EVENT_SETUP_STARTED)
-			System.sleep(SLEEP_MODE_DEEP, duration);
+			System.sleep(SLEEP_MODE_DEEP, duration, SLEEP_DISABLE_WKP_PIN);
 		}
 		else
 		if (strcmp(argv[1], "deepStandby") == 0) {
 			// SLEEP_MODE_DEEP requires cellular handshaking again (blinking green) and also
 			// restarts running setup() again, so you'll get an event 0 (CONNECTION_EVENT_SETUP_STARTED)
-			System.sleep(SLEEP_MODE_DEEP, duration, SLEEP_NETWORK_STANDBY);
+			System.sleep(SLEEP_MODE_DEEP, duration, SLEEP_NETWORK_STANDBY | SLEEP_DISABLE_WKP_PIN);
 		}
 		else
 		if (strcmp(argv[1], "stop") == 0) {

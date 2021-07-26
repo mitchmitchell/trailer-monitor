@@ -71,7 +71,7 @@ void ConnectionCheck::loop() {
 				// It sleeps for some period (maybe 10 - 15 minutes?) before trying again to
 				// avoid draining the battery continuously trying and failing to connect.
 				ConnectionEvents::addEvent(ConnectionEvents::CONNECTION_EVENT_FAILURE_SLEEP);
-				System.sleep(SLEEP_MODE_DEEP, failureSleepSec);
+				System.sleep(SLEEP_MODE_DEEP, failureSleepSec, SLEEP_DISABLE_WKP_PIN);
 			}
 
 			// Reboot

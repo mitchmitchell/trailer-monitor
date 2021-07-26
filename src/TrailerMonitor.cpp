@@ -89,8 +89,7 @@ void startupMacro() {
 	System.enableFeature(FEATURE_RESET_INFO);
 }
 STARTUP(startupMacro());
-//STARTUP(System.enableFeature(FEATURE_RETAINED_MEMORY));
-//STARTUP(System.enableFeature(FEATURE_RESET_INFO));
+
 // System threaded mode is not required here, but it's a good idea with 0.6.0 and later.
 // https://docs.particle.io/reference/firmware/electron/#system-thread
 SYSTEM_THREAD(ENABLED);
@@ -205,12 +204,13 @@ void setup() {
 
   SetGPSAntenna("external"); // set up for external antenna
 
+	connectionCheck.setup();
 	// If you're battery powered, it's a good idea to enable this. If a cellular or cloud connection cannot
 	// be made, a full modem reset is first done. If that doesn't resolve the problem, on the second and
 	// subsequent failures, the Electron will sleep for this many seconds. The intention is to set it to
 	// maybe 10 - 20 minutes so if there is a problem like SIM paused or a network or cloud failure, the
 	// Electron won't continuously try and fail to connect, depleting the battery.
-	connectionCheck.withFailureSleepSec(15 * 60);
+	connectionCheck.withFailureSleepSec(5 * 60);
 
 	// We store connection events in retained memory. Do this early because things like batteryCheck will generate events.
 	connectionEvents.setup();
@@ -220,7 +220,7 @@ void setup() {
 
 	// Set up the other modules
 	sessionCheck.setup();
-	connectionCheck.setup();
+
 	tester.setup();
 
 	// These functions are useful for remote diagnostics. Read more below.
@@ -374,7 +374,7 @@ int gpsPublish(String command) {
 
 // Lets you remotely check the battery status by calling the function "batt"
 // Triggers a publish with the info (so subscribe or watch the dashboard)
-// and also returns a '1' if there's >10% battery left and a '0' if below
+// and also returns a '1' if there's >10% battery left and a '2' if below
 int pwrPublish(String command){
     // Publish the battery voltage and percentage of battery remaining
     // if you want to be really efficient, just report one of these

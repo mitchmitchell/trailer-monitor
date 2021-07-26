@@ -20,5 +20,5 @@ void AppWatchdogWrapper::watchdogCallback() {
 	// but since by definition the main loop thread is stuck when the app watchdog fires, this is
 	// probably not that unsafe. (The application watchdog runs in a separate thread.)
 	ConnectionEvents::addEvent(ConnectionEvents::CONNECTION_EVENT_APP_WATCHDOG);
-	System.reset();
+	System.reset(RESET_NO_WAIT);
 }
