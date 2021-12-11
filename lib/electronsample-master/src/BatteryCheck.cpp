@@ -31,7 +31,7 @@ void BatteryCheck::checkAndSleepIfNecessary() {
 	if (soc != 0.0 && soc < minimumSoC && !pmic.isPowerGood()) {
 		ConnectionEvents::addEvent(ConnectionEvents::CONNECTION_EVENT_LOW_BATTERY_SLEEP, static_cast<int>(soc));
 
-		System.sleep(SLEEP_MODE_DEEP, sleepTimeSecs);
+		System.sleep(SLEEP_MODE_DEEP, sleepTimeSecs, SLEEP_DISABLE_WKP_PIN);
 	}
 
 }

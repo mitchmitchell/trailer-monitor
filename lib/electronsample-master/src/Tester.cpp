@@ -144,7 +144,7 @@ void Tester::processOptions(char *mutableData) {
 			// This mode will shut down the cellular modem to save power so upon wake it requires cellular handshaking
 			// again (blinking green)
 			if (sleepTestPin >= 0) {
-				System.sleep(sleepTestPin, FALLING, duration);
+				System.sleep(sleepTestPin, FALLING, duration, SLEEP_DISABLE_WKP_PIN); // need to determine if WKP disable is necessary.
 
 				ConnectionEvents::addEvent(ConnectionEvents::CONNECTION_EVENT_STOP_SLEEP_WAKE, 0);
 			}
@@ -155,7 +155,7 @@ void Tester::processOptions(char *mutableData) {
 			// This mode keeps the cellular modem alive, so you should go right back into blinking cyan to handshake
 			// to the cloud only
 			if (sleepTestPin >= 0) {
-				System.sleep(sleepTestPin, FALLING, duration, SLEEP_NETWORK_STANDBY);
+				System.sleep(sleepTestPin, FALLING, duration, SLEEP_NETWORK_STANDBY | SLEEP_DISABLE_WKP_PIN);  // need to confirm if WKP disable needed.
 
 				ConnectionEvents::addEvent(ConnectionEvents::CONNECTION_EVENT_STOP_SLEEP_WAKE, 0);
 			}

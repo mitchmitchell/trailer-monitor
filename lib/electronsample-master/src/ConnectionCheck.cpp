@@ -140,6 +140,6 @@ void ConnectionCheck::fullModemReset() {
 	delay(1000);
 
 	// Go into deep sleep for 10 seconds to try to reset everything. This turns off the modem as well.
-	System.sleep(SLEEP_MODE_DEEP, 10);
+	System.sleep(SLEEP_MODE_DEEP, 10, SLEEP_DISABLE_WKP_PIN);
 }
 
