@@ -31,6 +31,16 @@
 
 #define APP_WATCHDOG_TIMEOUT	60000 // milliseconds
 
+// How long a DHT read may stay "acquiring" before we give up and start over
+#define DHT_ACQUIRE_TIMEOUT   5000  // milliseconds
+// After a publish fails, wait this long before trying it again
+#define PUBLISH_RETRY_MS      10000 // milliseconds
+// If the GPS goes silent, power cycle it, but no more often than this
+#define GPS_RESTART_INTERVAL_MS (10 * 60 * 1000UL)
+// Largest publish delay accepted from the cloud (30 days). Keeps the
+// minutes-to-milliseconds conversion from overflowing.
+#define MAX_DELAY_MINUTES     43200
+
 // Bit Masks to enable/disable transmission/serial printing particular events
 
 #define TRANSMITTINGGPSDATA 0x00000001
@@ -133,6 +143,20 @@ int accelThreshold = 9000;
 String pubAccel = "";
 // Did we have power the last time we checked -- only want to publish on the transition to no power
 bool lastPower = true; // assume we do, then we will report power lost on boot if we really don't
+// Has each periodic value been published since boot? Until it has, publish
+// as soon as there is something to send instead of waiting a full delay.
+bool gpsPublished = false;
+bool accPublished = false;
+bool dhtPublished = false;
+
+// Spaces out retries of a publish that failed
+struct RetryTimer {
+  unsigned long last = 0;
+  bool waiting = false;
+  bool ready() { return !waiting || (millis() - last >= PUBLISH_RETRY_MS); }
+  void failed() { waiting = true; last = millis(); }
+  void ok() { waiting = false; }
+};
 
 // Set whether you want the device to publish data to the internet by default here.
 // 1 will Particle.publish AND Serial.print, 0 will just Serial.print
@@ -250,6 +274,7 @@ void loop() {
 	tester.loop();
 
   checkAccelStatus();
+  checkGPSHealth();
   checkGPSStatus();
   checkPowerStatus();
   checkDHTStatus();
@@ -272,34 +297,78 @@ void button_clicked(system_event_t event, int param)
 		  transmittingData &= ~( SERIALBTNDATA | SERIALCONNDATA | SERIALLOOPDATA | SERIALSETUPDATA | SERIALGPSDATA | SERIALACCDATA | SERIALPWRDATA | SERIALDHTDATA );
 }
 
+// Parse a whole decimal (or 0x hex) number. Returns false if the text is not a number.
+bool parseNumber(const String &text, long &value) {
+    const char *start = text.c_str();
+    char *end;
+    value = strtol(start, &end, 0);
+    while (*end == ' ') end++;
+    return (end != start) && (*end == '\0');
+}
+
+// Publish only when the cloud is connected, and report whether the event was sent.
+// Waiting for the result can take a while on a poor connection, so let the
+// application watchdog know we are still alive first.
+bool publishEvent(const char *name, const String &data) {
+    if (!Particle.connected()) {
+        return false;
+    }
+    ApplicationWatchdog::checkin();
+    bool sent = Particle.publish(name, data, 60, PRIVATE);
+    ApplicationWatchdog::checkin();
+    return sent;
+}
+
+// Shared by the three publish delay functions. Returns the new value, or -1
+// (and leaves the delay alone) if the argument is not 1..MAX_DELAY_MINUTES.
+int setDelayMinutes(String command, int &delayMinutes) {
+    long value;
+    if (!parseNumber(command, value) || value < 1 || value > MAX_DELAY_MINUTES) {
+        return -1;
+    }
+    delayMinutes = (int) value;
+    return delayMinutes;
+}
+
 // Remotely change the trigger threshold!
+// Returns -1 and changes nothing if the argument is not a positive number.
 int accelThresholder(String command) {
-    accelThreshold = atoi(command);
+    long value;
+    if (!parseNumber(command, value) || value < 1 || value > 100000) {
+        return -1;
+    }
+    accelThreshold = (int) value;
     return accelThreshold;
 }
 // Remotely change the publishing delay for GPS!
 int setDelayGPSMinutes(String command) {
-    delayGPSMinutes = atoi(command);
-    return delayGPSMinutes;
+    return setDelayMinutes(command, delayGPSMinutes);
 }
 
 // Remotely change the publishing delay for ACC!
 int setDelayACCMinutes(String command) {
-    delayACCMinutes = atoi(command);
-    return delayACCMinutes;
+    return setDelayMinutes(command, delayACCMinutes);
 }
 
 // Remotely change the publishing delay for DHT!
 int setDelayDHTMinutes(String command) {
-    delayDHTMinutes = atoi(command);
-    return delayDHTMinutes;
+    return setDelayMinutes(command, delayDHTMinutes);
 }
 
 // Allows you to remotely change whether a device is publishing to the cloud
 // or is only reporting data over Serial. Saves data when using only Serial!
 // Change the default at the top of the code.
+// Accepts decimal or 0x hex, including the top bit (SERIALDHTDATA).
+// Returns -1 and changes nothing if the argument is not a number.
 int transmitMode(String command) {
-    transmittingData = atoi(command);
+    const char *start = command.c_str();
+    char *end;
+    unsigned long value = strtoul(start, &end, 0);
+    while (*end == ' ') end++;
+    if (end == start || *end != '\0') {
+        return -1;
+    }
+    transmittingData = (int) value;
     return transmittingData;
 }
 
@@ -360,7 +429,11 @@ int pwrPublish(String command){
 // Lets you remotely check the accelleration status by calling the function "readXYZmagnitude"
 // Triggers a publish with the info (so subscribe or watch the dashboard)
 int accPublish(String command){
-  Particle.publish("LJACELRT", String::format("{\"x\":%d,\"y\":%d,\"z\":%d,\"m\":%d}", t.readX(), t.readY(), t.readZ(), t.readXYZmagnitude()), 60, PRIVATE);
+  // One sample for all four values so they describe the same instant
+  int x, y, z;
+  t.readXYZ(&x, &y, &z);
+  int magnitude = (int) sqrt(((double)x*x)+((double)y*y)+((double)z*z));
+  Particle.publish("LJACELRT", String::format("{\"x\":%d,\"y\":%d,\"z\":%d,\"m\":%d}", x, y, z, magnitude), 60, PRIVATE);
   return 1;
 }
 
@@ -387,66 +460,119 @@ int envPublish(String command){
 
 
 int checkPowerStatus() {
+    static RetryTimer retry;
     bool currentPower = pc.getHasPower();
     if (lastPower != currentPower) {
       // Only publish if we're in transmittingData mode 1;
       if ((transmittingData & TRANSMITTINGPWRDATA) == TRANSMITTINGPWRDATA) {
-        Particle.publish("LJPWRSTAT", String::format("{\"s\": %d,\"n\": 1,\"v\":%.2f,\"c\":%.2f}",currentPower,fuel.getVCell(),fuel.getSoC()), 60, PRIVATE );
-        lastPower = currentPower; // note that we only update power status if we actually transmitted data so that when data is turned back on we will report
+        if (retry.ready()) {
+          // note that we only update power status if we actually transmitted data so that
+          // when data is turned back on, or the cloud connection comes back, we will report
+          if (publishEvent("LJPWRSTAT", String::format("{\"s\": %d,\"n\": 1,\"v\":%.2f,\"c\":%.2f}",currentPower,fuel.getVCell(),fuel.getSoC()))) {
+            lastPower = currentPower;
+            retry.ok();
+          } else {
+            retry.failed();
+          }
+        }
       }
     }
     return 1;
 }
 
-void checkGPSStatus() {
-    // if the current time - the last time we published is greater than your set delay...
-    if (millis()-lastGPSPublish > ((unsigned long) delayGPSMinutes*60*1000)) {
+// If the GPS has stopped talking, power cycle it and set it up again.
+// The rest of the monitor (power, temperature, movement) keeps running.
+void checkGPSHealth() {
+    static unsigned long lastRestart = 0;
+    static bool restarted = false;
 
-        // GPS requires a "fix" on the satellites to give good data,
-        // so we should only publish data if there's a fix
-        if (t.gpsFix()) {
-            // Only publish if we're in transmittingData mode 1;
-            if ((transmittingData & TRANSMITTINGGPSDATA) == TRANSMITTINGGPSDATA) {
-							time_t time = Time.now();
-							Time.format(time, TIME_FORMAT_ISO8601_FULL); // 2004-01-10T08:22:04-05:15
-                // Short publish names save data!
-              Particle.publish("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f,\"tm\":\"%s\"}",t.readLatDeg(),t.readLonDeg(),(t.getAltitude() / 1000),(t.getGpsAccuracy() / 1000),Time.format(time, TIME_FORMAT_ISO8601_FULL).c_str()), 60, PRIVATE);
+    if (!t.gpsStalled()) {
+        return;
+    }
+    if (restarted && (millis() - lastRestart < GPS_RESTART_INTERVAL_MS)) {
+        return;
+    }
+    restarted = true;
+    lastRestart = millis();
+
+    Log.warn("GPS is not responding, power cycling it");
+    timer.stop();   // keep the timer thread away from the serial port meanwhile
+    t.gpsOff();
+    delay(2000);
+    t.gpsOn();
+    SetGPSAntenna(gpsAntennaExternal ? "external" : "internal");
+    timer.start();
+}
+
+void checkGPSStatus() {
+    static RetryTimer retry;
+    // if we have published before and the current time - the last time we published
+    // is not yet greater than your set delay, there is nothing to do
+    if (gpsPublished && (millis()-lastGPSPublish <= ((unsigned long) delayGPSMinutes*60*1000))) {
+        return;
+    }
+
+    // GPS requires a "fix" on the satellites to give good data,
+    // so we should only publish data if there's a fix
+    if (t.gpsFix()) {
+        // Only publish if we're in transmittingData mode 1;
+        if (((transmittingData & TRANSMITTINGGPSDATA) == TRANSMITTINGGPSDATA) && retry.ready()) {
+            time_t time = Time.now();
+            // Short publish names save data!
+            if (publishEvent("LJGPSFIX", String::format("{\"la\":%f,\"lo\":%f,\"ht\":%f,\"ac\":%f,\"tm\":\"%s\"}",t.readLatDeg(),t.readLonDeg(),(t.getAltitude() / 1000),(t.getGpsAccuracy() / 1000),Time.format(time, TIME_FORMAT_ISO8601_FULL).c_str()))) {
                 // Remember when we published
-              lastGPSPublish = millis();
+                lastGPSPublish = millis();
+                gpsPublished = true;
+                retry.ok();
+            } else {
+                retry.failed();
             }
-            // but always report the data over serial for local development
-						if ((transmittingData & SERIALGPSDATA) == SERIALGPSDATA)
-            	Serial.println(t.readLatLon());
         }
+        // but always report the data over serial for local development
+        if ((transmittingData & SERIALGPSDATA) == SERIALGPSDATA)
+            Serial.println(t.readLatLon());
     }
 }
 
 void checkAccelStatus() {
-      // Check if there's been a big acceleration
-      int readMagnitude = t.readXYZmagnitude();
+      static RetryTimer retry;
+      // Check if there's been a big acceleration. Take one sample and use it
+      // for all four values so they describe the same instant.
+      int x, y, z;
+      t.readXYZ(&x, &y, &z);
+      int readMagnitude = (int) sqrt(((double)x*x)+((double)y*y)+((double)z*z));
       if (readMagnitude > accelThreshold) {
-          pubAccel = String::format("{\"x\":%d,\"y\":%d,\"z\":%d,\"m\":%d}", t.readX(), t.readY(), t.readZ(), readMagnitude);
-					if ((transmittingData & SERIALACCDATA) == SERIALACCDATA)
-          	Serial.println(pubAccel);
+          pubAccel = String::format("{\"x\":%d,\"y\":%d,\"z\":%d,\"m\":%d}", x, y, z, readMagnitude);
+          if ((transmittingData & SERIALACCDATA) == SERIALACCDATA)
+            Serial.println(pubAccel);
       }
-      // if the current time - the last time we published is greater than your set delay...
-      if (millis()-lastACCPublish > ((unsigned long) delayACCMinutes*60*1000)) {
-          if ((transmittingData & TRANSMITTINGACCDATA) == TRANSMITTINGACCDATA) {
-            // only publish if we had an accelleration event occur since our last publication time
-            if (pubAccel != "") {
+      // only publish if we had an accelleration event occur since our last publication time
+      if (pubAccel == "") {
+          return;
+      }
+      // if we haven't published yet, or the current time - the last time we published is greater than your set delay...
+      if (!accPublished || (millis()-lastACCPublish > ((unsigned long) delayACCMinutes*60*1000))) {
+          if (((transmittingData & TRANSMITTINGACCDATA) == TRANSMITTINGACCDATA) && retry.ready()) {
               // Short publish names save data!
-              Particle.publish("LJACELRT", pubAccel, 60, PRIVATE);
-							gpsPublish(""); // publish position if we get an accelleration alert
-              // Remember when we published
-              lastACCPublish = millis();
-              pubAccel = "";
-            }
+              if (publishEvent("LJACELRT", pubAccel)) {
+                  gpsPublish(""); // publish position if we get an accelleration alert
+                  // Remember when we published
+                  lastACCPublish = millis();
+                  accPublished = true;
+                  pubAccel = "";
+                  retry.ok();
+              } else {
+                  // keep the event and try again shortly
+                  retry.failed();
+              }
           }
       }
 }
 
 void checkDHTStatus() {
   static uint32_t msLastSample = 0;
+  static uint32_t msStarted = 0;
+  static RetryTimer retry;
   int result = 0;
   if (millis() - msLastSample <  DHT_SAMPLE_INTERVAL) return;
 
@@ -456,76 +582,95 @@ void checkDHTStatus() {
     }
     dht.acquire();
     bDHTstarted = true;
+    msStarted = millis();
   }
 
-  if (!dht.acquiring()) {           // has sample completed?
-    result = dht.getStatus();
-
-		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA) {
-      Serial.print("Read sensor: ");
-      switch (result) {
-        case DHTLIB_OK:
-          Serial.println("OK");
-          break;
-        case DHTLIB_ERROR_CHECKSUM:
-          Serial.println("Error\n\r\tChecksum error");
-          break;
-        case DHTLIB_ERROR_ISR_TIMEOUT:
-          Serial.println("Error\n\r\tISR time out error");
-          break;
-        case DHTLIB_ERROR_RESPONSE_TIMEOUT:
-          Serial.println("Error\n\r\tResponse time out error");
-          break;
-        case DHTLIB_ERROR_DATA_TIMEOUT:
-          Serial.println("Error\n\r\tData time out error");
-          break;
-        case DHTLIB_ERROR_ACQUIRING:
-          Serial.println("Error\n\r\tAcquiring");
-          break;
-        case DHTLIB_ERROR_DELTA:
-          Serial.println("Error\n\r\tDelta time to small");
-          break;
-        case DHTLIB_ERROR_NOTSTARTED:
-          Serial.println("Error\n\r\tNot started");
-          break;
-        default:
-          Serial.println("Unknown error");
-          break;
-      }
+  if (dht.acquiring()) {
+    // Still waiting. If the sensor never answers the library stays in this
+    // state forever, so reset it and start over after a timeout.
+    if (millis() - msStarted > DHT_ACQUIRE_TIMEOUT) {
+      if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA)
+        Serial.println("DHT sensor did not respond, resetting it");
+      dht.begin();
+      bDHTstarted = false;
+      msLastSample = millis();
     }
+    return;
+  }
+
+  // The sample has completed, successfully or not. Either way reset the
+  // sample flag now so that a failed read is retried on the next interval
+  // instead of stopping temperature reporting for good.
+  result = dht.getStatus();
+  bDHTstarted = false;
+  msLastSample = millis();
+
+  if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA) {
+    Serial.print("Read sensor: ");
+    switch (result) {
+      case DHTLIB_OK:
+        Serial.println("OK");
+        break;
+      case DHTLIB_ERROR_CHECKSUM:
+        Serial.println("Error\n\r\tChecksum error");
+        break;
+      case DHTLIB_ERROR_ISR_TIMEOUT:
+        Serial.println("Error\n\r\tISR time out error");
+        break;
+      case DHTLIB_ERROR_RESPONSE_TIMEOUT:
+        Serial.println("Error\n\r\tResponse time out error");
+        break;
+      case DHTLIB_ERROR_DATA_TIMEOUT:
+        Serial.println("Error\n\r\tData time out error");
+        break;
+      case DHTLIB_ERROR_ACQUIRING:
+        Serial.println("Error\n\r\tAcquiring");
+        break;
+      case DHTLIB_ERROR_DELTA:
+        Serial.println("Error\n\r\tDelta time to small");
+        break;
+      case DHTLIB_ERROR_NOTSTARTED:
+        Serial.println("Error\n\r\tNot started");
+        break;
+      default:
+        Serial.println("Unknown error");
+        break;
+    }
+  }
 
   // Reading temperature or humidity takes about 250 milliseconds!
   // Sensor readings may also be up to 2 seconds 'old' (its a
   // very slow sensor)
-  	float h = dht.getHumidity();
+  float h = dht.getHumidity();
   // Read temperature as Farenheit
-  	float f = dht.getFahrenheit();
+  float f = dht.getFahrenheit();
   // Check if any reads failed and exit early (to try again).
-  	if (isnan(h) || isnan(f) || result != DHTLIB_OK) {
-  		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA)
-  			Serial.println("Failed to read from DHT sensor!");
-  		return;
-  	}
-    // if the current time - the last time we published is greater than your set delay...
-    if (millis()-lastDHTPublish > ((unsigned long) delayDHTMinutes*60*1000)) {
-      if ((transmittingData & TRANSMITTINGDHTDATA) == TRANSMITTINGDHTDATA) {
-        // Short publish names save data!
-        Particle.publish("LJENVMT", String::format("{\"t\":%.2f,\"h\":%.2f}",f,h), 60, PRIVATE);
+  if (isnan(h) || isnan(f) || result != DHTLIB_OK) {
+    if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA)
+      Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+  // if we haven't published yet, or the current time - the last time we published is greater than your set delay...
+  if (!dhtPublished || (millis()-lastDHTPublish > ((unsigned long) delayDHTMinutes*60*1000))) {
+    if (((transmittingData & TRANSMITTINGDHTDATA) == TRANSMITTINGDHTDATA) && retry.ready()) {
+      // Short publish names save data!
+      if (publishEvent("LJENVMT", String::format("{\"t\":%.2f,\"h\":%.2f}",f,h))) {
         // Remember when we published
         lastDHTPublish = millis();
+        dhtPublished = true;
+        retry.ok();
+      } else {
+        retry.failed();
       }
     }
-		if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA) {
-      Serial.printlnf("Humidity (%%): %.2f", dht.getHumidity());
-      Serial.printlnf("Temperature (oC): %.2f", dht.getCelsius());
-      Serial.printlnf("Temperature (oF): %.2f", dht.getFahrenheit());
-      Serial.printlnf("Temperature (K): %.2f", dht.getKelvin());
-      Serial.printlnf("Dew Point (oC): %.2f", dht.getDewPoint());
-      Serial.printlnf("Dew Point Slow (oC): %.2f", dht.getDewPointSlow());
-    }
-
-    bDHTstarted = false;  // reset the sample flag so we can take another
-    msLastSample = millis();
+  }
+  if ((transmittingData & SERIALDHTDATA) == SERIALDHTDATA) {
+    Serial.printlnf("Humidity (%%): %.2f", dht.getHumidity());
+    Serial.printlnf("Temperature (oC): %.2f", dht.getCelsius());
+    Serial.printlnf("Temperature (oF): %.2f", dht.getFahrenheit());
+    Serial.printlnf("Temperature (K): %.2f", dht.getKelvin());
+    Serial.printlnf("Dew Point (oC): %.2f", dht.getDewPoint());
+    Serial.printlnf("Dew Point Slow (oC): %.2f", dht.getDewPointSlow());
   }
 }
 
@@ -536,19 +681,27 @@ int resetODO(String command) {
     return 1;
 }
 // Allows changing the measurement rate
+// Argument is "<measurement ms> [<measurements per navigation solution>]".
+// Returns -1 and changes nothing if the measurement time is missing or out of range.
 int gpsRate(String command) {
-    uint16_t rate = atoi(command);
-    int nav = atoi(command.substring(command.indexOf(' ')));
+    int rate = 0;
+    int nav = 1;
+    int fields = sscanf(command.c_str(), "%d %d", &rate, &nav);
+    if (fields < 1 || rate < 100 || rate > 65535) {
+        return -1;
+    }
+    if (fields < 2) {
+        nav = 1;
+    }
 		if ((transmittingData & SERIALGPSDATA) == SERIALGPSDATA) {
 			Serial.print("rate: ");
 	    Serial.print(rate);
 	    Serial.print(" nav: ");
 	    Serial.println(nav);
 		}
-    t.gpsRate(rate, nav);
+    t.gpsRate((uint16_t) rate, nav);
     return 1;
 }
-
 
 // This shows how to access all the (current) values but isn't
 // too useful otherwise since the Asset Tracker 2 hardware can't

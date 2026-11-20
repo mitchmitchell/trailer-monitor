@@ -26,8 +26,9 @@ uint8_t enablePOSLLH[] =
 // max time we wait for an update from the receiver. This must reflect
 // measRate and navRate in the CFG_RATE_TYPE message, and the rate in 
 // all CFG_MSG_TYPE messages.
-// If we don't receive a message within this amount of time, the GPS reciever
-// will be turned off for 2 seconds and then the system wil be rebooted.
+// If we don't receive a message within this amount of time, stalled()
+// returns true and hasFix() returns false. The application decides how to
+// recover (TrailerMonitor power cycles the receiver).
 // This implementation is fragile. If the measurement or nav rate in the 
 // cfgRate message is changed this value probably should be changed along
 // with the rate. It is handled much more robustly by the setRate routine.
@@ -57,7 +58,7 @@ uint8_t cfgNav5[] =
 0x06,0x24, // class,id - message identifier, CFG_MSG_TYPE
 0x24,0x00, // length - 36 decimal
 0x01,0x00, // parameters bitmask, set dynamic model, turn off static hold
-0x03,      // dynamic model - pedestrian
+0x04,      // dynamic model - automotive (pedestrian, 3, is limited to 30 m/s, about 67 mph)
 0x00,      // fix mode - recommended to not change
 0x00,0x00, // fixed alt
 0x00,0x00, // fixed alt
@@ -125,6 +126,16 @@ uint8_t resetODOmsg[] =
 // for simplifying ack detection
 AckedMsg ackedMsg = AckedMsg();
 
+// Scoped lock for the receive parser. Does nothing until the mutex exists.
+class RxGuard
+{
+public:
+    RxGuard(os_mutex_recursive_t m) : m(m) { if (m) os_mutex_recursive_lock(m); }
+    ~RxGuard() { if (m) os_mutex_recursive_unlock(m); }
+private:
+    os_mutex_recursive_t m;
+};
+
 UbloxM8Q_GPS::UbloxM8Q_GPS()
 {
     common_init();
@@ -134,6 +145,10 @@ void
 UbloxM8Q_GPS::common_init()
 {
   initComplete = false;
+  gpsOn = false;
+  rxLock = nullptr;
+  rxType = rxLength = 0;
+  lastMsgMs = lastPvtMs = 0;
   hour = minute = seconds = month = day = 0;
   year = 0;
   milliseconds = tow = 0;
@@ -175,7 +190,13 @@ UbloxM8Q_GPS::begin()
 	    // NMEA ascii messages. We still get some ascii that gets
 	    // thrown out by readUBXmsg. The first periodic ubx message gets 
 	    // corrupted but, not to worry, it sends more soon.
+	    if (!rxLock){
+		// Created here rather than in the constructor, which runs
+		// before the RTOS is ready.
+		os_mutex_recursive_create(&rxLock);
+	    }
 	    readVer();
+	    lastMsgMs = millis();
 	    gpsOn = true;
 	    state++;
 	    // fall through to next case
@@ -305,19 +326,25 @@ UbloxM8Q_GPS::setRate(uint16_t measurement, int navigationSol)
 	navigationSol = 127;
 	Serial.println("setRate: changed navigationSol to maximum 127");
     }
-    ubxWatchdog = measurement * navigationSol * 5;
+    uint32_t newWatchdog = (uint32_t)measurement * navigationSol * 5;
+    if (newWatchdog < 10000){
+	newWatchdog = 10000; // don't declare the receiver dead over a few late messages
+    }
     Serial.print("setRate: measurement: ");
     Serial.println(measurement);
     Serial.print("setRate: navigationSol: ");
     Serial.println(navigationSol);
     Serial.print("setRate: ubxWatchdog: ");
-    Serial.println(ubxWatchdog);
+    Serial.println(newWatchdog);
     rateMsg[PAYLOAD_IDX] = (measurement & 0xFF); // little endian
     rateMsg[PAYLOAD_IDX + 1] = ((measurement/256) & 0xFF);
     rateMsg[PAYLOAD_IDX + 2] = (navigationSol & 0xFF);
     rateMsg[PAYLOAD_IDX + 3] = 0;
 
-    sendCommand(rateMsg);
+    // Only change the timeout if the receiver accepted the new rate
+    if (sendCommand(rateMsg) == ubxSUCCESS){
+	ubxWatchdog = newWatchdog;
+    }
 }
 void
 UbloxM8Q_GPS::resetODO(void)
@@ -361,7 +388,7 @@ UbloxM8Q_GPS::setThresh(int speed, uint16_t distance)
 
 
 // Won't return until command is ACKed or an error is detected.
-void
+enum ubxReturn
 UbloxM8Q_GPS::sendCommand(uint8_t *msg) // send a ubx format command
 {
 
@@ -378,6 +405,7 @@ UbloxM8Q_GPS::sendCommand(uint8_t *msg) // send a ubx format command
     if (r == ubxNO_ACK){
 	Serial.println("gps.sendCommand got ubxNO_ACK");
     }
+    return r;
 }
 
 // writeUBX(msg) - 
@@ -393,6 +421,9 @@ UbloxM8Q_GPS::writeUBX(uint8_t *msg) // send a ubx format command
     unsigned long cur;
     static int msgType;
     static bool sent = false;
+
+    // The ACK list is also updated by read() on the timer thread
+    RxGuard guard(rxLock);
 
     if (!sent){
 	msgType = ubxMsgType(msg);
@@ -430,29 +461,52 @@ UbloxM8Q_GPS::writeUBX(uint8_t *msg) // send a ubx format command
 // Must be called repeatedly. It does not return info about what was
 // read. Caller must check other results such as data access methods or
 // ackedMsg().
+// May be called from more than one thread (the software timer and the
+// application thread while it waits for an ACK), so the parser and its
+// buffer are protected by rxLock. The buffer is a member, not a local,
+// because a message is normally assembled across several calls.
 void
 UbloxM8Q_GPS::read()
 {
-    uint8_t msg[256];
-    static int type, length;
     enum ubxReturn r;
 
-    if (gpsOn){
-	while(Serial1.available()){
-	    r = readUBXmsg(msg, &type, &length);
-	    if (r == ubxBAD_LENGTH){
-		Serial.println("gps.read got ubxBAD_LENGTH");
-	    }
-	    if (r == ubxBAD_CHECK_SUM){
-		Serial.println("gps.read got ubxBAD_CHECK_SUM");
-	    }
-	    if (r == ubxSUCCESS){
-		// don't starve the cloud if we are getting frequent gps updates
-		parse(msg, type, length);
-	    }
-	    // else r == ubxPENDING, do nothing
-	}
+    if (!gpsOn){
+	return;
     }
+    RxGuard guard(rxLock);
+    while(Serial1.available()){
+	r = readUBXmsg(rxMsg, &rxType, &rxLength);
+	if (r == ubxBAD_LENGTH){
+	    Serial.println("gps.read got ubxBAD_LENGTH");
+	}
+	if (r == ubxBAD_CHECK_SUM){
+	    Serial.println("gps.read got ubxBAD_CHECK_SUM");
+	}
+	if (r == ubxSUCCESS){
+	    lastMsgMs = millis();
+	    parse(rxMsg, rxType, rxLength);
+	}
+	// else r == ubxPENDING, do nothing
+    }
+}
+
+// True when the receiver is supposed to be running but no valid message
+// has arrived within the ubxWatchdog period. The application decides what
+// to do about it (see AssetTracker2::gpsStalled()).
+bool
+UbloxM8Q_GPS::stalled()
+{
+    uint32_t last = lastMsgMs; // read before millis() so the difference can't go negative
+    return gpsOn && ((millis() - last) > ubxWatchdog);
+}
+
+// True only while the receiver is reporting a valid fix and that report
+// is recent.
+bool
+UbloxM8Q_GPS::hasFix()
+{
+    uint32_t last = lastPvtMs;
+    return fix && ((millis() - last) <= ubxWatchdog);
 }
 
 
@@ -522,8 +576,8 @@ UbloxM8Q_GPS::parsePOSLLH(uint8_t *msg)
        ((float) getLong(&data[8])) * 0.0000001;
     geoidheight =        // Height above ellipsoid, mm
        (float)getLong(&data[12]);  // WGS84 unless user altered. See ublox spec.
-    altitude =          // Height above Mean Sea Level, mm
-       (float)getULong(&data[16]);
+    altitude =          // Height above Mean Sea Level, mm (signed)
+       (float)getLong(&data[16]);
     horzAcc =                // Horizontal Accuracy estimate, mm
        getULong(&data[20]);
     vertAcc =                // Vertical Accuracy extimate, mm
@@ -541,10 +595,13 @@ UbloxM8Q_GPS::parsePVT(uint8_t *msg)
     // Setting this pointer and then using hardcoded indexes allows
     // me to directly compare the code with the ublox spec.
 
+    lastPvtMs = millis();
     tow = getULong(&data[0]);
     // gnssFixOk bit in Bitfield Flags
     if ((data[21] & 0x01) == 0){
-	// Fix not Ok
+	// Fix not Ok. Say so, otherwise the last position keeps being
+	// reported as current after the signal is lost.
+	fix = false;
 	return;
     }
     uint8_t flags = data[11];
@@ -574,7 +631,7 @@ UbloxM8Q_GPS::parsePVT(uint8_t *msg)
     // it when it is negative and just use it when it is positive.
     int32_t nanoseconds = getLong(&data[16]);
     if (nanoseconds > 0){
-        milliseconds = nanoseconds/1000;
+        milliseconds = nanoseconds/1000000;
     } else {
         milliseconds = 0;
     }
@@ -592,8 +649,8 @@ UbloxM8Q_GPS::parsePVT(uint8_t *msg)
        ((float) getLong(&data[28]))*0.0000001;
     geoidheight = // Height above ellipsoid, mm
        (float)getLong(&data[32]); // WGS84 unless user altered. See ublox spec.
-    altitude =          // Height above Mean Sea Level, mm
-       (float)getULong(&data[36]);
+    altitude =          // Height above Mean Sea Level, mm (signed)
+       (float)getLong(&data[36]);
     horzAcc =                // Horizontal Accuracy estimate, mm
        getULong(&data[40]);
     vertAcc =                // Vertical Accuracy extimate, mm
@@ -609,7 +666,7 @@ UbloxM8Q_GPS::parsePVT(uint8_t *msg)
     headingMot =                   // heading of motion, degrees 1e-5
         (float) (getLong(&data[64])/100000.0);
     headingVeh =                   // heading of vehicle, degrees 1e-5
-        (float) (getLong(&data[64])/100000.0);
+        (float) (getLong(&data[84])/100000.0);
     if (data[21] & 0x20){
 	headVehValid = true;
     } else {
@@ -644,6 +701,8 @@ UbloxM8Q_GPS::parseODO(uint8_t *msg)
 //    Serial.print("odoAcc: ");
 //    Serial.println(odoAcc);
 }
+// Consumes at most one byte from the receiver per call.
+// msg must have room for 256 bytes.
 enum ubxReturn
 UbloxM8Q_GPS::readUBXmsg(uint8_t *msg, int *type, int *length)
 {
@@ -654,45 +713,36 @@ UbloxM8Q_GPS::readUBXmsg(uint8_t *msg, int *type, int *length)
 	checksum
     } state = waitB5;
     static int i;
-    uint32_t cur;
-    static uint32_t startTime;
-    static bool firstTime = true;
+    uint8_t c;
+
+    if (!Serial1.available()){
+	return ubxPENDING;
+    }
+    c = Serial1.read();
 
     switch (state){
     case waitB5:
-	if (firstTime){
-	    startTime = millis();
-	    firstTime = false;
-	}
-	if(Serial1.available()){
-	    msg[0] = Serial1.read();
-	    if (msg[0] == 0xb5){
-		i = 1;
-		state = ubxLength;
-		firstTime = true;
-	    } else {
-		Serial.print(">");
-		Serial.print(msg[0], HEX);
-	    }
-	}
-	cur = millis();
-	// its supposed to be running. Give up after awhile
-	if ((state == waitB5) && ((cur - startTime)> ubxWatchdog)){
-	    void (* resetFunc) (void) = 0;
-	    Serial.println("Tired of waiting for the GPS. I'm going shut it off and reboot.");
-	    delay(2000);
-	    digitalWrite(D6,HIGH);
-	    delay(2000);
-	    resetFunc();
+	if (c == 0xb5){
+	    msg[0] = c;
+	    i = 1;
+	    state = ubxLength;
+	} else {
+	    Serial.print(">");
+	    Serial.print(c, HEX);
 	}
 	return ubxPENDING;
 	break;
     case ubxLength:
 	// Read header, class, id, length
-	if(Serial1.available()){
-	    msg[i] = Serial1.read();
-	    i++;
+	if (i == 1 && c != 0x62){
+	    // Not the second sync byte, so this was not the start of a message
+	    if (c != 0xb5){
+		state = waitB5;
+	    }
+	    return ubxPENDING;
 	}
+	msg[i] = c;
+	i++;
 	if (i == 6){ // read all the header
 	    *length = ubx_length(msg);
 	    if ( *length > (256 - 8) ){
@@ -702,27 +752,24 @@ UbloxM8Q_GPS::readUBXmsg(uint8_t *msg, int *type, int *length)
 		return ubxBAD_LENGTH;
 	    } else {
 		*type = ubxMsgType(msg);
-		state = payload;
+		// A message with no payload goes straight to the check sum
+		state = (*length == 0) ? checksum : payload;
 	    }
 	}
 	return ubxPENDING;
 	break;
     case payload:
-	if(Serial1.available()){
-	    msg[i] = Serial1.read();
-	    i++;
-	}
-	if ( i == (6 + *length)){
+	msg[i] = c;
+	i++;
+	if ( i >= (6 + *length)){
 	    state = checksum;
 	}
 	return ubxPENDING;
 	break;
     case checksum:
-	if(Serial1.available()){
-	    msg[i] = Serial1.read();
-	    i++;
-	}
-	if ( i == (8 + *length)){
+	msg[i] = c;
+	i++;
+	if ( i >= (8 + *length)){
 	    uint8_t ck_a, ck_b;
 	    state = waitB5; // going to start over error or not
 	    ubxCS(msg, &ck_a, &ck_b);
@@ -736,6 +783,7 @@ UbloxM8Q_GPS::readUBXmsg(uint8_t *msg, int *type, int *length)
 	return ubxPENDING;
 	break;
     default:
+	state = waitB5;
 	break;
     }
     return ubxPENDING;
@@ -795,12 +843,13 @@ UbloxM8Q_GPS::getUInt(uint8_t *m)
 int32_t
 UbloxM8Q_GPS::getLong(uint8_t *m)
 {
-    return((m[3]*(0xFFFFFF+1))+(m[2]*(0xFFFF+1))+(m[1]*(0xFF+1))+(m[0]));
+    return (int32_t)getULong(m);
 }
 uint32_t 
 UbloxM8Q_GPS::getULong(uint8_t *m)
 {
-    return((m[3]*(0xFFFFFF+1))+(m[2]*(0xFFFF+1))+(m[1]*(0xFF+1))+(m[0]));
+    // Unsigned shifts: multiplying m[3] as an int overflows for values >= 0x80
+    return (((uint32_t)m[3] << 24) | ((uint32_t)m[2] << 16) | ((uint32_t)m[1] << 8) | (uint32_t)m[0]);
 }
 float 
 UbloxM8Q_GPS::getFloat(uint8_t *m)
@@ -819,7 +868,7 @@ UbloxM8Q_GPS::delayButProcess(uint32_t time)
 {
     uint32_t start = millis();
     uint32_t cur = millis();
-    while (cur - start > time){
+    while (cur - start < time){
 	if(Particle.connected()){
 	    Particle.process();
 	}
@@ -836,7 +885,10 @@ UbloxM8Q_GPS::readVer()
 {
     int linecnt = 0;
     char c;
-    while (linecnt < 10){
+    uint32_t start = millis();
+    // Give up after 5 seconds. A receiver that is missing, dead, or already
+    // switched to UBX-only output must not hang setup() forever.
+    while (linecnt < 10 && (millis() - start) < 5000){
 	while (Serial1.available()){
 	    c = Serial1.read();
 	    if ( c == '\n'){
@@ -872,6 +924,11 @@ AckedMsg::AckedMsg()
 int 
 AckedMsg::setAck(int msgType)
 {
+    // Already recorded? Don't use up another slot (ACKs for commands that
+    // are never cleared, like the antenna selection, used to fill the list).
+    if (isAcked(msgType)){
+	return 0;
+    }
     for(uint16_t i=0;i<sizeof(ackList)/sizeof(int);i++) {
 	if (!ackList[i]){
 	    ackList[i] = msgType;

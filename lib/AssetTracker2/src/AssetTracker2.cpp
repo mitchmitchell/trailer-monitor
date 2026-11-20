@@ -167,7 +167,12 @@ bool AssetTracker2::gpsInitComplete() {
 }
 
 bool AssetTracker2::gpsFix() {
-    return gps.fix;
+    // Only true while the receiver is still reporting a valid, recent fix
+    return gps.hasFix();
+}
+
+bool AssetTracker2::gpsStalled() {
+    return gps.stalled();
 }
 
 bool AssetTracker2::gpsDateValid() {
@@ -240,7 +245,9 @@ void AssetTracker2::readXYZ(int *x, int *y, int *z){
 
 int AssetTracker2::readXYZmagnitude() {
     accel.read();
-    int magnitude = sqrt((accel.x*accel.x)+(accel.y*accel.y)+(accel.z*accel.z));
+    // Use floating point: the sum of three squared 16-bit values overflows a 32-bit int
+    double x = accel.x, y = accel.y, z = accel.z;
+    int magnitude = (int) sqrt((x*x)+(y*y)+(z*z));
     return magnitude;
 }
 

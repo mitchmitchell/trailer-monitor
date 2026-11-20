@@ -67,8 +67,14 @@ public:
 
   void common_init(void);
   enum ubxReturn begin(void);
-  void sendCommand(uint8_t *msg); // Won't return until ACK or error
+  enum ubxReturn sendCommand(uint8_t *msg); // Won't return until ACK or error
   void read(); // update gps info
+
+  // true while the receiver reports a valid fix and that report is recent
+  bool hasFix();
+  // true if the receiver is on but has sent nothing valid for the
+  // ubxWatchdog period
+  bool stalled();
 
   // set the measurement rate and navigation solution rate. Also sets the
   // ubxWatchdog timeout
@@ -118,6 +124,13 @@ private:
 
   // set when receiver enabled
   bool gpsOn;
+  // Receive state. A message is assembled across several calls to read(),
+  // possibly from different threads, so the buffer lives here under a lock.
+  uint8_t rxMsg[256];
+  int rxType, rxLength;
+  os_mutex_recursive_t rxLock;
+  volatile uint32_t lastMsgMs; // millis() of the last valid message
+  volatile uint32_t lastPvtMs; // millis() of the last NAV-PVT message
   // length is 2 bytes, little endian
   int ubx_length(uint8_t *m) {
         return( ((m[LENGTH_IDX])+(m[LENGTH_IDX+1]*256)));}
