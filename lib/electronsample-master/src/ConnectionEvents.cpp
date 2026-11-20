@@ -27,6 +27,7 @@ void ConnectionEvents::setup() {
 		//
 		Log.info("initializing connection event retained memory");
 		connectionEventData.eventMagic = CONNECTION_EVENT_MAGIC;
+		connectionEventData.eventCount = 0;
 	}
 	add(CONNECTION_EVENT_SETUP_STARTED);
 
@@ -76,7 +77,7 @@ void ConnectionEvents::loop() {
 	connectionEventData.eventCount -= numHandled;
 	if (connectionEventData.eventCount > 0) {
 		Log.info("couldn't send all events, saving %d for later", connectionEventData.eventCount);
-		memmove(&connectionEventData.events[0], &connectionEventData.events[numHandled], connectionEventData.eventCount * sizeof(ConnectionEventData));
+		memmove(&connectionEventData.events[0], &connectionEventData.events[numHandled], connectionEventData.eventCount * sizeof(ConnectionEventInfo));
 	}
 	else {
 		Log.info("sent %d events", numHandled);
@@ -93,7 +94,7 @@ void ConnectionEvents::add(int eventCode, int data /* = 0 */) {
 		// Throw out oldest event
 		Log.info("discarding old event");
 		connectionEventData.eventCount--;
-		memmove(&connectionEventData.events[0], &connectionEventData.events[1], connectionEventData.eventCount * sizeof(ConnectionEventData));
+		memmove(&connectionEventData.events[0], &connectionEventData.events[1], connectionEventData.eventCount * sizeof(ConnectionEventInfo));
 	}
 
 	// Add new event

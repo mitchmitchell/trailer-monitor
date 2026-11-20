@@ -6,7 +6,8 @@ retained SessionRetainedData SessionCheck::sessionRetainedData;
 
 
 SessionCheck::SessionCheck(time_t checkPeriodSecs, const char *eventSuffix) : checkPeriodSecs(checkPeriodSecs) {
-	//eventName = System.deviceID() + "/" + eventSuffix;
+	// The device ID prefix is added in setup(); System.deviceID() is not safe to call
+	// from a global constructor.
 	eventName = eventSuffix;
 }
 
@@ -20,6 +21,9 @@ void SessionCheck::setup() {
 		sessionRetainedData.lastCheckSecs = 0;
 	}
 
+	// Make the event name unique to this device so another device's session check
+	// can't satisfy ours.
+	eventName = System.deviceID() + "/" + eventName;
 
 	Particle.subscribe(eventName, &SessionCheck::subscriptionHandler, this, MY_DEVICES);
 }

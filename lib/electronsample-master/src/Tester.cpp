@@ -46,6 +46,10 @@ void Tester::loop() {
 // time out because the response will never be received.
 int Tester::functionHandler(String argStr) {
 	// Process this in loop so the function won't time out
+	if (functionData) {
+		// A previous call has not been processed yet; replace it rather than leak it
+		free(functionData);
+	}
 	functionData = strdup(argStr.c_str());
 
 	return 0;
