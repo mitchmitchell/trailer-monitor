@@ -46,6 +46,7 @@ class AssetTracker2 {
     antennaInternal(void),
     antennaExternal(void),
     gpsInitComplete(void),
+    gpsStalled(void),
     gpsDateValid(void),
     gpsTimeValid(void),
     getGpsHeadingVehValid(void),
